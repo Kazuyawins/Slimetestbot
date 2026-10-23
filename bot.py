@@ -208,13 +208,365 @@ async def ping(interaction: discord.Interaction):
   )
 
 
+# --- スパム対策の設定コマンド ---
+@bot.tree.command(
+    name="setspam",
+    description="【管理者用】スパム検知の条件とペナルティ（タイムアウト/キック/BAN/削除）を設定します",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    seconds="何秒間の間に（例: 5）",
+    limit="何件メッセージが送信されたら（例: 5）",
+    action="ペナルティの種類を選択",
+    timeout_minutes="タイムアウトする場合の分数（デフォルト: 5）",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="タイムアウト (Timeout)", value="timeout"),
+        app_commands.Choice(name="キック (Kick)", value="kick"),
+        app_commands.Choice(name="BAN (Ban)", value="ban"),
+        app_commands.Choice(name="メッセージ削除のみ (Delete)", value="delete"),
+    ]
+)
+async def setspam(
+    interaction: discord.Interaction,
+    seconds: float,
+    limit: int,
+    action: str,
+    timeout_minutes: int = 5,
+):
+  guild_id = interaction.guild.id
+  SPAM_SETTINGS[guild_id] = {
+      "seconds": seconds,
+      "limit": limit,
+      "action": action,
+      "timeout_minutes": timeout_minutes,
+      "role_id": None,
+  }
+
+  action_names = {
+      "timeout": f"タイムアウト ({timeout_minutes}分)",
+      "kick": "キック",
+      "ban": "BAN",
+      "delete": "メッセージ削除のみ",
+  }
+
+  await interaction.response.send_message(
+      f"🛡️ スパム検知の条件を設定しました！\n"
+      f"• **検知条件:** **{seconds}秒間**に **{limit}件** 以上の連続送信\n"
+      f"• **ペナルティ:** **{action_names.get(action, action)}**",
+      ephemeral=True,
+  )
+
+
+@bot.tree.command(
+    name="spam_role",
+    description="【管理者用】スパム判定から除外するロールを設定します",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(role="除外したいロール")
+async def spam_role(interaction: discord.Interaction, role: discord.Role):
+  guild_id = interaction.guild.id
+  if guild_id not in SPAM_SETTINGS:
+    SPAM_SETTINGS[guild_id] = {
+        "seconds": 5.0,
+        "limit": 5,
+        "action": "timeout",
+        "timeout_minutes": 5,
+        "role_id": role.id,
+    }
+  else:
+    SPAM_SETTINGS[guild_id]["role_id"] = role.id
+
+  await interaction.response.send_message(
+      f"🛡️ スパム除外ロールに **{role.name}** を設定しました！",
+      ephemeral=True,
+  )
+
+
+@bot.tree.command(
+    name="spam_role_remove",
+    description="【管理者用】スパム除外ロールの設定を解除します",
+)
+@app_commands.default_permissions(administrator=True)
+async def spam_role_remove(interaction: discord.Interaction):
+  guild_id = interaction.guild.id
+  if guild_id in SPAM_SETTINGS:
+    SPAM_SETTINGS[guild_id]["role_id"] = None
+
+  await interaction.response.send_message(
+      "🗑️ スパム除外ロールの設定を解除しました。", ephemeral=True
+  )
+
+
+# --- ロール付与パネルコマンド ---
+@bot.tree.command(
+    name="role_panel",
+    description="【管理者用】ロール付与ボタン付きの埋め込みメッセージを送信します",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    role="付与・解除を切り替えるロール",
+    title="埋め込みのタイトル",
+    description="本文（説明文）",
+    button_label="ボタンに表示するテキスト",
+)
+async def role_panel(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    title: str,
+    description: str,
+    button_label: str = "ロールを受け取る",
+):
+  if interaction.guild.me.top_role <= role:
+    await interaction.response.send_message(
+        "❌ 指定されたロールがボットのロールよりも上にあるため、付与できません。",
+        ephemeral=True,
+    )
+    return
+
+  embed = discord.Embed(
+      title=title, description=description, color=discord.Color.blue()
+  )
+  view = RoleButtonView(role.id, button_label)
+
+  await interaction.channel.send(embed=embed, view=view)
+  await interaction.response.send_message(
+      "✅ ロール付与パネルを送信しました！", ephemeral=True
+  )
+
+
+class RoleButtonView(discord.ui.View):
+
+  def __init__(self, role_id: int = None, button_label: str = "ロールを受け取る"):
+    super().__init__(timeout=None)
+    self.role_id = role_id
+    custom_id = f"role_button_{role_id}" if role_id else "role_button_default"
+    
+    self.add_item(
+        discord.ui.Button(
+            label=button_label,
+            style=discord.ButtonStyle.primary,
+            custom_id=custom_id,
+        )
+    )
+
+  async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    role_id = self.role_id
+    if not role_id and interaction.data.get("custom_id"):
+      parts = interaction.data["custom_id"].split("_")
+      if parts[-1].isdigit():
+        role_id = int(parts[-1])
+
+    role = interaction.guild.get_role(role_id) if role_id else None
+    if not role:
+      await interaction.response.send_message(
+          "❌ ロールが見つかりませんでした。", ephemeral=True
+      )
+      return False
+
+    try:
+      if role in interaction.user.roles:
+        await interaction.user.remove_roles(role)
+        await interaction.response.send_message(
+            f"❌ ロール「{role.name}」を解除しました。", ephemeral=True
+        )
+      else:
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(
+            f"🎉 ロール「{role.name}」を付与しました！", ephemeral=True
+        )
+    except discord.Forbidden:
+      await interaction.response.send_message(
+          "❌ ボットにロールを管理する権限がありません。", ephemeral=True
+      )
+    except Exception as e:
+      await interaction.response.send_message(
+          f"❌ エラーが発生しました: {e}", ephemeral=True
+      )
+    return True
+
+
+# --- CAPTCHA認証パネル設置コマンド ---
+@bot.tree.command(
+    name="captcha_setup", description="認証パネル（ボタン）を設置します"
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(role="認証完了時に付与するロール")
+async def captcha_setup(interaction: discord.Interaction, role: discord.Role):
+  embed = discord.Embed(
+      title="🔒 サーバー認証",
+      description=(
+          "サーバーへようこそ！\n下の **「認証を開始する」** ボタンを押して、"
+          "表示される画像認証をクリアしてください。"
+      ),
+      color=discord.Color.blue(),
+  )
+  view = CaptchaPanelView(role.id)
+  await interaction.channel.send(embed=embed, view=view)
+  await interaction.response.send_message(
+      "✅ 認証パネルを設置しました！", ephemeral=True
+  )
+
+
+def generate_captcha_code():
+  return "".join(
+      random.choices(string.ascii_uppercase + string.digits, k=5)
+  )
+
+
+def create_captcha_image(code):
+  width, height = 200, 80
+  image = Image.new("RGB", (width, height), color=(240, 240, 240))
+  draw = ImageDraw.Draw(image)
+
+  for _ in range(5):
+    xy = (
+        random.randint(0, width),
+        random.randint(0, height),
+        random.randint(0, width),
+        random.randint(0, height),
+    )
+    draw.line(xy, fill=(random.randint(100, 200),) * 3, width=2)
+
+  for _ in range(100):
+    xy = (random.randint(0, width), random.randint(0, height))
+    draw.point(xy, fill=(random.randint(50, 150),) * 3)
+
+  try:
+    font = ImageFont.load_default()
+  except Exception:
+    font = None
+
+  x = 30
+  for char in code:
+    y = random.randint(10, 30)
+    draw.text(
+        (x, y),
+        char,
+        fill=(random.randint(0, 100),) * 3,
+        font=font,
+        font_size=36,
+    )
+    x += 28
+
+  buffer = io.BytesIO()
+  image.save(buffer, format="PNG")
+  buffer.seek(0)
+  return buffer
+
+
+class CaptchaModal(discord.ui.Modal, title="CAPTCHA画像認証"):
+
+  def __init__(self, role: discord.Role, correct_code: str):
+    super().__init__()
+    self.role = role
+    self.correct_code = correct_code
+
+    self.user_input = discord.ui.TextInput(
+        label="画像の英数字を入力してください（大文字小文字区別）",
+        placeholder="例: A3B9X",
+        min_length=5,
+        max_length=5,
+        required=True,
+    )
+    self.add_item(self.user_input)
+
+  async def on_submit(self, interaction: discord.Interaction):
+    entered_text = self.user_input.value.strip()
+
+    if entered_text == self.correct_code:
+      try:
+        await interaction.user.add_roles(self.role)
+        await interaction.response.send_message(
+            "🎉 認証に成功しました！ロールが付与されました。",
+            ephemeral=True,
+        )
+      except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ ボットにロールを付与する権限がありません。", ephemeral=True
+        )
+    else:
+      await interaction.response.send_message(
+          "❌ 認証コードが違います。もう一度パネルのボタンからやり直してください。",
+          ephemeral=True,
+      )
+
+
+class CaptchaInputPromptView(discord.ui.View):
+
+  def __init__(self, role: discord.Role, correct_code: str):
+    super().__init__(timeout=180)
+    self.role = role
+    self.correct_code = correct_code
+
+  @discord.ui.button(
+      label="コードを入力する",
+      style=discord.ButtonStyle.primary,
+      custom_id="open_captcha_modal_btn",
+  )
+  async def open_modal(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    await interaction.response.send_modal(
+        CaptchaModal(self.role, self.correct_code)
+    )
+
+
+class CaptchaPanelView(discord.ui.View):
+
+  def __init__(self, role_id: int = None):
+    super().__init__(timeout=None)
+    self.role_id = role_id
+    custom_id = f"start_captcha_{role_id}" if role_id else "start_captcha_default"
+
+    self.button = discord.ui.Button(
+        label="認証を開始する",
+        style=discord.ButtonStyle.success,
+        custom_id=custom_id,
+    )
+    self.button.callback = self.start_auth
+    self.add_item(self.button)
+
+  async def start_auth(self, interaction: discord.Interaction):
+    role_id = self.role_id
+    if not role_id and interaction.data.get("custom_id"):
+      parts = interaction.data["custom_id"].split("_")
+      if parts[-1].isdigit():
+        role_id = int(parts[-1])
+
+    target_role = interaction.guild.get_role(role_id) if role_id else None
+    if not target_role:
+      await interaction.response.send_message(
+          "❌ 認証ロールが見つからないか、設定されていません。", ephemeral=True
+      )
+      return
+
+    if target_role in interaction.user.roles:
+      await interaction.response.send_message(
+          "ℹ️ すでに認証済みです！", ephemeral=True
+      )
+      return
+
+    code = generate_captcha_code()
+    image_bytes = create_captcha_image(code)
+    file = discord.File(image_bytes, filename="captcha.png")
+
+    await interaction.response.send_message(
+        "下の画像に描かれている**5桁の英数字**を確認し、ボタンを押して入力してください：",
+        file=file,
+        view=CaptchaInputPromptView(target_role, code),
+        ephemeral=True,
+    )
+
+
 @bot.event
 async def on_ready():
   print(f"ログインしました: {bot.user.name}")
 
-  bot.add_view(CaptchaPanelView(None))
+  bot.add_view(CaptchaPanelView())
   bot.add_view(GlobalAgreeView())
-  bot.add_view(RoleButtonView(None))
+  bot.add_view(RoleButtonView())
 
   try:
     synced = await bot.tree.sync()
@@ -222,8 +574,9 @@ async def on_ready():
   except Exception as e:
     print(f"コマンドの同期に失敗しました: {e}")
 
-  if not send_date_announcement.is_running():
-    send_date_announcement.start()
+  idols_task = send_date_announcement
+  if not idols_task.is_running():
+    idols_task.start()
 
 
 @bot.event
@@ -236,19 +589,32 @@ async def on_message(message: discord.Message):
     if message.author.id in GLOBAL_BANNED_USERS:
       return
 
-    embed = discord.Embed(
-        description=message.content,
-        color=discord.Color.blue(),
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    content = message.content
+
+    prefix = ""
+    if message.reference:
+      try:
+        ref_msg = message.reference.cached_message
+        if not ref_msg and message.channel:
+          ref_msg = await message.channel.fetch_message(
+              message.reference.message_id
+          )
+        if ref_msg:
+          ref_author = ref_msg.author.display_name
+          ref_content = ref_msg.content.replace("\n", " ")
+          if len(ref_content) > 30:
+            ref_content = ref_content[:30] + "..."
+          prefix = f"> ↪️ **{ref_author}** への返信\n> {ref_content}\n\n"
+      except Exception:
+        pass
+
+    display_name = f"{message.author.display_name} ({message.guild.name})"
+    avatar_url = (
+        message.author.avatar.url
+        if message.author.avatar
+        else message.author.default_avatar.url
     )
-    embed.set_author(
-        name=f"{message.author.name} ({message.guild.name})",
-        icon_url=(
-            message.author.avatar.url
-            if message.author.avatar
-            else message.author.default_avatar.url
-        ),
-    )
+    final_content = prefix + content
 
     for ch_id in GLOBAL_CHANNELS:
       if ch_id == message.channel.id:
@@ -256,13 +622,84 @@ async def on_message(message: discord.Message):
       target_channel = bot.get_channel(ch_id)
       if target_channel:
         try:
-          await target_channel.send(embed=embed)
-        except Exception:
-          pass
+          webhooks = await target_channel.webhooks()
+          webhook = discord.utils.get(webhooks, name="GlobalChatWebhook")
+          if not webhook:
+            webhook = await target_channel.create_webhook(name="GlobalChatWebhook")
+
+          await webhook.send(
+              content=final_content,
+              username=display_name,
+              avatar_url=avatar_url,
+          )
+        except Exception as e:
+          print(f"グローバルチャット Webhook送信エラー: {e}")
+
+  # --- スパム対策の判定と実行処理 ---
+  if message.guild:
+    guild_id = message.guild.id
+    if not message.author.guild_permissions.administrator and guild_id in SPAM_SETTINGS:
+      settings = SPAM_SETTINGS[guild_id]
+      role_id = settings.get("role_id")
+
+      # 除外ロール持ちはスキップ
+      if not (role_id and any(r.id == role_id for r in message.author.roles)):
+        now_ts = datetime.datetime.now().timestamp()
+        user_history = SPAM_TRACKER[message.author.id]
+
+        time_window = settings["seconds"]
+        message_limit = settings["limit"]
+
+        while user_history and now_ts - user_history[0] > time_window:
+          user_history.popleft()
+
+        user_history.append(now_ts)
+
+        if len(user_history) >= message_limit:
+          action = settings.get("action", "timeout")
+          try:
+            if action == "timeout":
+              minutes = settings.get("timeout_minutes", 5)
+              await message.author.timeout(
+                  datetime.timedelta(minutes=minutes),
+                  reason="スパム検知による自動タイムアウト",
+              )
+              await message.channel.send(
+                  f"⚠️ {message.author.mention} さん、短期間の連続送信（スパム）が検知されたため、{minutes}分間のタイムアウト処分を受けました。",
+                  delete_after=10,
+              )
+            elif action == "kick":
+              await message.author.kick(reason="スパム検知による自動キック")
+              await message.channel.send(
+                  f"⚠️ {message.author.mention} さんがスパム検知によりキックされました。",
+                  delete_after=10,
+              )
+            elif action == "ban":
+              await message.author.ban(reason="スパム検知による自動BAN")
+              await message.channel.send(
+                  f"⚠️ {message.author.mention} さんがスパム検知によりBANされました。",
+                  delete_after=10,
+              )
+            elif action == "delete":
+              pass  # 下部のメッセージ削除処理で対応
+
+            # 対象となったユーザーの履歴をクリア
+            user_history.clear()
+          except discord.Forbidden:
+            print("権限不足のためスパム処置を実行できませんでした。")
+          except Exception as e:
+            print(f"スパム処置エラー: {e}")
+
+          # メッセージ削除またはアクション実行時に該当メッセージを消す
+          try:
+            await message.delete()
+            return  # スパムと判定された場合は以降のリンク置換等を処理しない
+          except Exception:
+            pass
 
   content = message.content
 
-  # --- SNSリンク変換処理 ＆ Webhookなりすまし送信 ＆ リプライ再現 ---
+  # --- SNSリンク変換処理（通常テキスト送信） ---
   replaced = False
 
   if YOUTUBE_PATTERN.search(content):
@@ -294,49 +731,12 @@ async def on_message(message: discord.Message):
 
   if replaced:
     try:
-      # ウェブフックを取得または作成
-      webhooks = await message.channel.webhooks()
-      webhook = discord.utils.get(webhooks, name="LinkFixerWebhook")
-      if not webhook:
-        webhook = await message.channel.create_webhook(name="LinkFixerWebhook")
-
-      display_name = message.author.display_name
-      avatar_url = message.author.display_avatar.url
-
-      # 返信（リプライ）情報の取得・引用構築
-      prefix = ""
-      if message.reference:
-        try:
-          ref_msg = message.reference.cached_message
-          if not ref_msg and message.channel:
-            ref_msg = await message.channel.fetch_message(
-                message.reference.message_id
-            )
-          if ref_msg:
-            ref_author = ref_msg.author.display_name
-            ref_content = ref_msg.content.replace("\n", " ")
-            if len(ref_content) > 30:
-              ref_content = ref_content[:30] + "..."
-            prefix = f"> ↪️ **{ref_author}** への返信\n> {ref_content}\n\n"
-        except Exception:
-          pass
-
-      final_content = prefix + content
-
-      # Webhook経由で送信者の名前とアイコンで送信
-      await webhook.send(
-          content=final_content, username=display_name, avatar_url=avatar_url
-      )
-
-      # 元のメッセージを削除
+      await message.channel.send(f"{message.author.mention} が送信したリンク:\n{content}")
       await message.delete()
-
     except discord.Forbidden:
-      print(
-          "【権限エラー】Webhookの作成・送信、またはメッセージの削除権限がありません。"
-      )
+      print("【権限エラー】メッセージの削除または送信権限がありません。")
     except Exception as e:
-      print(f"Webhook送信エラー: {e}")
+      print(f"リンク送信エラー: {e}")
 
 
 async def main():
