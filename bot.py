@@ -4,6 +4,7 @@ import os
 import random
 import re
 import string
+from collections import defaultdict, deque
 from aiohttp import web
 import discord
 from discord import app_commands
@@ -22,12 +23,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 CONFIG_FILE = "channel_config.txt"
 
 def load_notification_channel_id():
-  # 1. まず環境変数を確認
   env_channel = os.getenv("CHANNEL_ID")
   if env_channel and env_channel.isdigit():
     return int(env_channel)
   
-  # 2. 保存ファイルがあればそこから読み込む
   if os.path.exists(CONFIG_FILE):
     try:
       with open(CONFIG_FILE, "r") as f:
@@ -52,12 +51,15 @@ WELCOME_CHANNEL_ID = None
 WELCOME_TITLE = "🎉 メンバーが参加しました！"
 WELCOME_DESCRIPTION = "{member.mention} さん、**{guild.name}** へようこそ！\n\nルールを確認してサーバーをお楽しみください！"
 
-# 退出通知用の変数（どのサーバーのどのチャンネルかを管理）
+# 退出通知用の変数
 LEAVE_GUILD_ID = None
 LEAVE_CHANNEL_ID = None
 
-# カスタム返信（完全一致）用辞書 {guild_id: {keyword: response_text}}
+# カスタム返信（完全一致）用辞書
 CUSTOM_RESPONSES = {}
+
+# メッセージ編集・削除ログの保持用 {guild_id: deque(maxlen=20)}
+MESSAGE_LOGS = defaultdict(lambda: deque(maxlen=20))
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -125,7 +127,6 @@ async def before_send_date_announcement():
 async def setchannel(interaction: discord.Interaction):
   global NOTIFICATION_CHANNEL_ID
   NOTIFICATION_CHANNEL_ID = interaction.channel.id
-  # 変更時にファイルへ永続保存する
   save_notification_channel_id(NOTIFICATION_CHANNEL_ID)
   
   await interaction.response.send_message(
@@ -134,7 +135,7 @@ async def setchannel(interaction: discord.Interaction):
   )
 
 
-# --- テストコマンド（日付送信確認 ＆ 認証パネルの生存確認） ---
+# --- テストコマンド ---
 @bot.tree.command(
     name="test",
     description="【管理者用】日付お知らせのテスト送信と認証パネルの動作テストを行います",
@@ -166,6 +167,51 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
       view=view,
       ephemeral=True,
   )
+
+
+# --- メッセージ編集・削除ログ確認コマンド（自分だけに表示） ---
+@bot.tree.command(
+    name="messagelog",
+    description="【管理者用】直近のメッセージ編集・削除ログを自分だけに表示します",
+)
+@app_commands.default_permissions(administrator=True)
+async def messagelog(interaction: discord.Interaction):
+  guild_id = interaction.guild.id
+  logs = MESSAGE_LOGS.get(guild_id)
+
+  if not logs:
+    await interaction.response.send_message(
+        "ℹ️ このサーバーでのメッセージ編集・削除のログはまだありません。",
+        ephemeral=True,
+    )
+    return
+
+  embed = discord.Embed(
+      title="📜 直近のメッセージ編集・削除ログ",
+      description="直近で発生したメッセージの編集・履歴（最新20件まで）です。",
+      color=discord.Color.purple(),
+  )
+
+  for entry in reversed(logs):
+    if entry["type"] == "編集":
+      value = (
+          f"**投稿者:** {entry['author']}\n"
+          f"**チャンネル:** {entry['channel']}\n"
+          f"**変更前:** {entry['before'][:200]}\n"
+          f"**変更後:** {entry['after'][:200]}\n"
+          f"**日時:** {entry['time']}"
+      )
+      embed.add_field(name="✏️ メッセージ編集", value=value, inline=False)
+    else:
+      value = (
+          f"**投稿者:** {entry['author']}\n"
+          f"**チャンネル:** {entry['channel']}\n"
+          f"**内容:** {entry['content'][:200]}\n"
+          f"**日時:** {entry['time']}"
+      )
+      embed.add_field(name="🗑️ メッセージ削除", value=value, inline=False)
+
+  await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # --- カスタム返信登録コマンド ---
@@ -215,16 +261,12 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
 # --- ウェルカムメッセージ設定コマンド ---
 @bot.tree.command(
     name="setwelcome",
-    description=(
-        "【管理者用】ウェルカムメッセージの送信先と表示内容を設定します"
-    ),
+    description="【管理者用】ウェルカムメッセージの送信先と表示内容を設定します",
 )
 @app_commands.default_permissions(manage_channels=True)
 @app_commands.describe(
     title="埋め込みのタイトル",
-    description=(
-        "本文（{member.mention} で参加者をメンションできます）"
-    ),
+    description="本文（{member.mention} で参加者をメンションできます）",
 )
 async def setwelcome(
     interaction: discord.Interaction, title: str, description: str
@@ -240,12 +282,10 @@ async def setwelcome(
   )
 
 
-# --- 退出通知（即抜け時間記録）設定コマンド ---
+# --- 退出通知設定コマンド ---
 @bot.tree.command(
     name="setleave",
-    description=(
-        "【管理者用】メンバー退出時の滞在時間記録を送信するチャンネルを設定します"
-    ),
+    description="【管理者用】メンバー退出時の滞在時間記録を送信するチャンネルを設定します",
 )
 @app_commands.default_permissions(manage_channels=True)
 async def setleave(interaction: discord.Interaction):
@@ -294,7 +334,7 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
   await interaction.response.send_message(embed=embed, view=view)
 
 
-# --- 管理者専用：埋め込みメッセージ送信コマンド ---
+# --- 埋め込みメッセージ送信コマンド ---
 @bot.tree.command(
     name="sendembed",
     description="【管理者用】指定した内容の埋め込み（Embed）メッセージを送信します",
@@ -549,6 +589,47 @@ async def on_ready():
     send_date_announcement.start()
 
 
+# --- メッセージ編集検知イベント ---
+@bot.event
+async def on_message_edit(before, after):
+  if before.author.bot:
+    return
+  if before.content == after.content:
+    return
+  if not before.guild:
+    return
+
+  guild_id = before.guild.id
+  log_entry = {
+      "type": "編集",
+      "author": f"{before.author} (ID: {before.author.id})",
+      "channel": before.channel.mention,
+      "before": before.content if before.content else "(空または画像のみ)",
+      "after": after.content if after.content else "(空または画像のみ)",
+      "time": datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+  }
+  MESSAGE_LOGS[guild_id].append(log_entry)
+
+
+# --- メッセージ削除検知イベント ---
+@bot.event
+async def on_message_delete(message):
+  if message.author.bot:
+    return
+  if not message.guild:
+    return
+
+  guild_id = message.guild.id
+  log_entry = {
+      "type": "削除",
+      "author": f"{message.author} (ID: {message.author.id})",
+      "channel": message.channel.mention,
+      "content": message.content if message.content else "(空または画像のみ)",
+      "time": datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+  }
+  MESSAGE_LOGS[guild_id].append(log_entry)
+
+
 # --- ウェルカムメッセージ送信イベント ---
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -580,7 +661,7 @@ async def on_member_join(member: discord.Member):
   await channel.send(embed=embed)
 
 
-# --- メンバー退出時の滞在時間（即抜け時間）記録イベント ---
+# --- メンバー退出時の滞在時間記録イベント ---
 @bot.event
 async def on_member_remove(member: discord.Member):
   global LEAVE_CHANNEL_ID, LEAVE_GUILD_ID
@@ -640,7 +721,7 @@ async def on_message(message: discord.Message):
   if message.author.bot:
     return
 
-  # --- カスタム返信（完全一致）のチェック ---
+  # カスタム返信（完全一致）のチェック
   if message.guild:
     guild_id = message.guild.id
     if guild_id in CUSTOM_RESPONSES and message.content in CUSTOM_RESPONSES[guild_id]:
