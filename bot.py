@@ -152,7 +152,6 @@ async def setchannel(interaction: discord.Interaction):
   )
 
 
-# --- メッセージログの送信先チャンネル設定コマンド ---
 @bot.tree.command(
     name="setlogchannel",
     description="【管理者用】メッセージの編集・削除ログを送信するチャンネルを設定します",
@@ -169,7 +168,6 @@ async def setlogchannel(interaction: discord.Interaction):
   )
 
 
-# --- テストコマンド ---
 @bot.tree.command(
     name="test",
     description="【管理者用】日付お知らせのテスト送信と認証パネルの動作テストを行います",
@@ -203,7 +201,6 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
   )
 
 
-# --- カスタム返信登録コマンド ---
 @bot.tree.command(
     name="addresponse",
     description="【管理者用】メッセージが完全一致したときにBotが返す返信を登録します",
@@ -225,7 +222,6 @@ async def addresponse(interaction: discord.Interaction, keyword: str, response: 
   )
 
 
-# --- カスタム返信削除コマンド ---
 @bot.tree.command(
     name="delresponse",
     description="【管理者用】登録したカスタム返信を削除します",
@@ -247,7 +243,6 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
     )
 
 
-# --- ウェルカムメッセージ設定コマンド ---
 @bot.tree.command(
     name="setwelcome",
     description="【管理者用】ウェルカムメッセージの送信先と表示内容を設定します",
@@ -271,7 +266,6 @@ async def setwelcome(
   )
 
 
-# --- 退出通知設定コマンド ---
 @bot.tree.command(
     name="setleave",
     description="【管理者用】メンバー退出時の滞在時間記録を送信するチャンネルを設定します",
@@ -297,7 +291,6 @@ async def ping(interaction: discord.Interaction):
   )
 
 
-# --- ユーザーのアバターを表示するコマンド ---
 @bot.tree.command(
     name="avatar", description="指定したユーザー（または自分）のアバターを表示します"
 )
@@ -323,7 +316,6 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
   await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-# --- 埋め込みメッセージ送信コマンド ---
 @bot.tree.command(
     name="sendembed",
     description="【管理者用】指定した内容の埋め込み（Embed）メッセージを送信します",
@@ -361,7 +353,6 @@ async def sendembed(
   )
 
 
-# --- CAPTCHA認証パネル設置コマンド ---
 @bot.tree.command(
     name="captcha_setup", description="認証パネル（ボタン）を設置します"
 )
@@ -565,7 +556,6 @@ class DeleteLinkView(discord.ui.View):
 async def on_ready():
   print(f"ログインしました: {bot.user.name}")
 
-  # 認証パネルを永続化するために再登録
   bot.add_view(CaptchaPanelView())
 
   try:
@@ -578,7 +568,6 @@ async def on_ready():
     send_date_announcement.start()
 
 
-# --- メッセージ編集検知イベント ---
 @bot.event
 async def on_message_edit(before, after):
   global LOG_CHANNEL_ID
@@ -609,7 +598,6 @@ async def on_message_edit(before, after):
   await channel.send(embed=embed)
 
 
-# --- メッセージ削除検知イベント ---
 @bot.event
 async def on_message_delete(message):
   global LOG_CHANNEL_ID
@@ -637,7 +625,6 @@ async def on_message_delete(message):
   await channel.send(embed=embed)
 
 
-# --- ウェルカムメッセージ送信イベント ---
 @bot.event
 async def on_member_join(member: discord.Member):
   global WELCOME_CHANNEL_ID, WELCOME_TITLE, WELCOME_DESCRIPTION
@@ -668,7 +655,6 @@ async def on_member_join(member: discord.Member):
   await channel.send(embed=embed)
 
 
-# --- メンバー退出時の滞在時間記録イベント ---
 @bot.event
 async def on_member_remove(member: discord.Member):
   global LEAVE_CHANNEL_ID, LEAVE_GUILD_ID
@@ -728,7 +714,6 @@ async def on_message(message: discord.Message):
   if message.author.bot:
     return
 
-  # カスタム返信（完全一致）のチェック
   if message.guild:
     guild_id = message.guild.id
     if guild_id in CUSTOM_RESPONSES and message.content in CUSTOM_RESPONSES[guild_id]:
