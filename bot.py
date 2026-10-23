@@ -18,10 +18,34 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-env_channel = os.getenv("CHANNEL_ID")
-NOTIFICATION_CHANNEL_ID = (
-    int(env_channel) if env_channel and env_channel.isdigit() else None
-)
+# --- チャンネルIDの永続化ファイル管理 ---
+CONFIG_FILE = "channel_config.txt"
+
+def load_notification_channel_id():
+  # 1. まず環境変数を確認
+  env_channel = os.getenv("CHANNEL_ID")
+  if env_channel and env_channel.isdigit():
+    return int(env_channel)
+  
+  # 2. 保存ファイルがあればそこから読み込む
+  if os.path.exists(CONFIG_FILE):
+    try:
+      with open(CONFIG_FILE, "r") as f:
+        content = f.read().strip()
+        if content.isdigit():
+          return int(content)
+    except Exception:
+      pass
+  return None
+
+def save_notification_channel_id(channel_id):
+  try:
+    with open(CONFIG_FILE, "w") as f:
+      f.write(str(channel_id))
+  except Exception as e:
+    print(f"チャンネル設定の保存に失敗しました: {e}")
+
+NOTIFICATION_CHANNEL_ID = load_notification_channel_id()
 
 # ウェルカムメッセージの設定保持用変数
 WELCOME_CHANNEL_ID = None
@@ -101,8 +125,11 @@ async def before_send_date_announcement():
 async def setchannel(interaction: discord.Interaction):
   global NOTIFICATION_CHANNEL_ID
   NOTIFICATION_CHANNEL_ID = interaction.channel.id
+  # 変更時にファイルへ永続保存する
+  save_notification_channel_id(NOTIFICATION_CHANNEL_ID)
+  
   await interaction.response.send_message(
-      f"✅ このチャンネル（{interaction.channel.mention}）を日付お知らせの送信先として設定しました！",
+      f"✅ このチャンネル（{interaction.channel.mention}）を日付お知らせの送信先として設定し、保存しました！",
       ephemeral=True,
   )
 
@@ -618,7 +645,7 @@ async def on_message(message: discord.Message):
     guild_id = message.guild.id
     if guild_id in CUSTOM_RESPONSES and message.content in CUSTOM_RESPONSES[guild_id]:
       await message.channel.send(CUSTOM_RESPONSES[guild_id][message.content])
-      return  # 返信した場合は以降のリンク置換処理などをスキップ
+      return
 
   content = message.content
   replaced = False
