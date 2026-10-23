@@ -833,10 +833,8 @@ class CaptchaPanelView(discord.ui.View):
   async def start_auth(
       self, interaction: discord.Interaction, button: discord.ui.Button
   ):
-    # パネル設置時にロールが保持されていない場合の安全対策
     target_role = self.role
     if not target_role:
-      # メッセージの埋め込みやロール情報を取得できない場合のフォールバック
       await interaction.response.send_message(
           "❌ 認証ロールが正しく設定されていません。管理者により再度 `/captcha_setup` を実行してください。",
           ephemeral=True,
@@ -853,8 +851,6 @@ class CaptchaPanelView(discord.ui.View):
     image_bytes = create_captcha_image(code)
     file = discord.File(image_bytes, filename="captcha.png")
 
-    # モーダルを表示するためのトリガーとして送信
-    modal = CaptchaModal(target_role, code)
     await interaction.response.send_message(
         "下の画像に描かれている**5桁の英数字**を確認し、ボタンを押して入力してください：",
         file=file,
@@ -920,48 +916,10 @@ class CaptchaModal(discord.ui.Modal, title="CAPTCHA画像認証"):
       )
 
 
-class DeleteLinkView(discord.ui.View):
-
-  def __init__(self, author_id: int, user_message_id: int, channel):
-    super().__init__(timeout=None)
-    self.author_id = author_id
-    self.user_message_id = user_message_id
-    self.channel = channel
-
-  @discord.ui.button(
-      label="リンクを消す", style=discord.ButtonStyle.danger, emoji="🗑️"
-  )
-  async def delete_button(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if interaction.user.id != self.author_id:
-      await interaction.response.send_message(
-          "❌ あなたが送信したリンクではないため削除できません。",
-          ephemeral=True,
-      )
-      return
-
-    try:
-      user_msg = await self.channel.fetch_message(self.user_message_id)
-      await user_msg.delete()
-      await interaction.response.send_message(
-          "✅ リンクを削除しました。", ephemeral=True
-      )
-    except discord.NotFound:
-      await interaction.response.send_message(
-          "ℹ️ すでに削除されているか、見つかりませんでした。", ephemeral=True
-      )
-    except Exception as e:
-      await interaction.response.send_message(
-          f"❌ 削除に失敗しました: {e}", ephemeral=True
-      )
-
-
 @bot.event
 async def on_ready():
   print(f"ログインしました: {bot.user.name}")
 
-  # 永続ビューの再登録（再起動後もボタンが動くようにする）
   bot.add_view(CaptchaPanelView(None))
   bot.add_view(GlobalAgreeView())
 
@@ -1094,7 +1052,7 @@ async def on_message(message: discord.Message):
         except Exception:
           pass
 
-  # --- スパム対策（設定された秒数・件数・除外ロールに基づく判定） ---
+  # --- スパム対策 ---
   if message.guild:
     guild_id = message.guild.id
     if not message.author.guild_permissions.administrator and guild_id in SPAM_SETTINGS:
@@ -1141,11 +1099,13 @@ async def on_message(message: discord.Message):
         await message.channel.send(response)
         break
 
-  # --- SNSリンク変換処理 ---
+  # --- SNSリンク変換処理 ＆ Webhookなりすまし送信 ＆ リプライ再現 ---
   replaced = False
 
   if YOUTUBE_PATTERN.search(content):
-    content = f"S!{content}"
+    content = content.replace("youtube.com", "koutube.com").replace(
+        "youtu.be", "koutube.com"
+    )
     replaced = True
   elif X_PATTERN.search(content):
     content = content.replace("twitter.com", "fxtwitter.com").replace(
@@ -1170,9 +1130,46 @@ async def on_message(message: discord.Message):
     replaced = True
 
   if replaced:
-    response_text = content
-    view = DeleteLinkView(message.author.id, message.id, message.channel)
-    await message.channel.send(response_text, view=view)
+    try:
+      webhooks = await message.channel.webhooks()
+      webhook = discord.utils.get(webhooks, name="LinkFixerWebhook")
+      if not webhook:
+        webhook = await message.channel.create_webhook(name="LinkFixerWebhook")
+
+      display_name = message.author.display_name
+      avatar_url = message.author.display_avatar.url
+
+      prefix = ""
+      if message.reference:
+        try:
+          ref_msg = message.reference.cached_message
+          if not ref_msg and message.channel:
+            ref_msg = await message.channel.fetch_message(
+                message.reference.message_id
+            )
+          if ref_msg:
+            ref_author = ref_msg.author.display_name
+            ref_content = ref_msg.content.replace("\n", " ")
+            if len(ref_content) > 30:
+              ref_content = ref_content[:30] + "..."
+            prefix = f"> ↪️ **{ref_author}** への返信\n> {ref_content}\n\n"
+        except Exception:
+          pass
+
+      final_content = prefix + content
+
+      await webhook.send(
+          content=final_content, username=display_name, avatar_url=avatar_url
+      )
+
+      await message.delete()
+
+    except discord.Forbidden:
+      print(
+          "権限不足のため、Webhookの作成・送信またはメッセージの削除ができませんでした。"
+      )
+    except Exception as e:
+      print(f"Webhook送信エラー: {e}")
 
 
 async def main():
