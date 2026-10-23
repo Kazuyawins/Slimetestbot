@@ -19,8 +19,9 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- チャンネルIDの永続化ファイル管理 ---
+# --- 設定の永続化ファイル管理 ---
 CONFIG_FILE = "channel_config.txt"
+LOG_CONFIG_FILE = "log_channel_config.txt"
 
 def load_notification_channel_id():
   env_channel = os.getenv("CHANNEL_ID")
@@ -44,7 +45,26 @@ def save_notification_channel_id(channel_id):
   except Exception as e:
     print(f"チャンネル設定の保存に失敗しました: {e}")
 
+def load_log_channel_id():
+  if os.path.exists(LOG_CONFIG_FILE):
+    try:
+      with open(LOG_CONFIG_FILE, "r") as f:
+        content = f.read().strip()
+        if content.isdigit():
+          return int(content)
+    except Exception:
+      pass
+  return None
+
+def save_log_channel_id(channel_id):
+  try:
+    with open(LOG_CONFIG_FILE, "w") as f:
+      f.write(str(channel_id))
+  except Exception as e:
+    print(f"ログチャンネル設定の保存に失敗しました: {e}")
+
 NOTIFICATION_CHANNEL_ID = load_notification_channel_id()
+LOG_CHANNEL_ID = load_log_channel_id()
 
 # ウェルカムメッセージの設定保持用変数
 WELCOME_CHANNEL_ID = None
@@ -57,9 +77,6 @@ LEAVE_CHANNEL_ID = None
 
 # カスタム返信（完全一致）用辞書
 CUSTOM_RESPONSES = {}
-
-# メッセージ編集・削除ログの保持用 {guild_id: deque(maxlen=20)}
-MESSAGE_LOGS = defaultdict(lambda: deque(maxlen=20))
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -135,6 +152,23 @@ async def setchannel(interaction: discord.Interaction):
   )
 
 
+# --- メッセージログの送信先チャンネル設定コマンド ---
+@bot.tree.command(
+    name="setlogchannel",
+    description="【管理者用】メッセージの編集・削除ログを送信するチャンネルを設定します",
+)
+@app_commands.default_permissions(administrator=True)
+async def setlogchannel(interaction: discord.Interaction):
+  global LOG_CHANNEL_ID
+  LOG_CHANNEL_ID = interaction.channel.id
+  save_log_channel_id(LOG_CHANNEL_ID)
+  
+  await interaction.response.send_message(
+      f"✅ このチャンネル（{interaction.channel.mention}）をメッセージログの送信先に設定しました！",
+      ephemeral=True,
+  )
+
+
 # --- テストコマンド ---
 @bot.tree.command(
     name="test",
@@ -167,51 +201,6 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
       view=view,
       ephemeral=True,
   )
-
-
-# --- メッセージ編集・削除ログ確認コマンド（自分だけに表示） ---
-@bot.tree.command(
-    name="messagelog",
-    description="【管理者用】直近のメッセージ編集・削除ログを自分だけに表示します",
-)
-@app_commands.default_permissions(administrator=True)
-async def messagelog(interaction: discord.Interaction):
-  guild_id = interaction.guild.id
-  logs = MESSAGE_LOGS.get(guild_id)
-
-  if not logs:
-    await interaction.response.send_message(
-        "ℹ️ このサーバーでのメッセージ編集・削除のログはまだありません。",
-        ephemeral=True,
-    )
-    return
-
-  embed = discord.Embed(
-      title="📜 直近のメッセージ編集・削除ログ",
-      description="直近で発生したメッセージの編集・履歴（最新20件まで）です。",
-      color=discord.Color.purple(),
-  )
-
-  for entry in reversed(logs):
-    if entry["type"] == "編集":
-      value = (
-          f"**投稿者:** {entry['author']}\n"
-          f"**チャンネル:** {entry['channel']}\n"
-          f"**変更前:** {entry['before'][:200]}\n"
-          f"**変更後:** {entry['after'][:200]}\n"
-          f"**日時:** {entry['time']}"
-      )
-      embed.add_field(name="✏️ メッセージ編集", value=value, inline=False)
-    else:
-      value = (
-          f"**投稿者:** {entry['author']}\n"
-          f"**チャンネル:** {entry['channel']}\n"
-          f"**内容:** {entry['content'][:200]}\n"
-          f"**日時:** {entry['time']}"
-      )
-      embed.add_field(name="🗑️ メッセージ削除", value=value, inline=False)
-
-  await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # --- カスタム返信登録コマンド ---
@@ -331,7 +320,7 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
       )
   )
 
-  await interaction.response.send_message(embed=embed, view=view)
+  await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # --- 埋め込みメッセージ送信コマンド ---
@@ -592,42 +581,60 @@ async def on_ready():
 # --- メッセージ編集検知イベント ---
 @bot.event
 async def on_message_edit(before, after):
+  global LOG_CHANNEL_ID
   if before.author.bot:
     return
   if before.content == after.content:
     return
-  if not before.guild:
+  if LOG_CHANNEL_ID is None:
     return
 
-  guild_id = before.guild.id
-  log_entry = {
-      "type": "編集",
-      "author": f"{before.author} (ID: {before.author.id})",
-      "channel": before.channel.mention,
-      "before": before.content if before.content else "(空または画像のみ)",
-      "after": after.content if after.content else "(空または画像のみ)",
-      "time": datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-  }
-  MESSAGE_LOGS[guild_id].append(log_entry)
+  channel = bot.get_channel(LOG_CHANNEL_ID)
+  if channel is None:
+    try:
+      channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+    except Exception:
+      return
+
+  embed = discord.Embed(
+      title="✏️ メッセージが編集されました",
+      color=discord.Color.orange(),
+      timestamp=datetime.datetime.now(datetime.timezone.utc),
+  )
+  embed.add_field(name="投稿者", value=f"{before.author} (`{before.author.id}`)", inline=False)
+  embed.add_field(name="チャンネル", value=before.channel.mention, inline=False)
+  embed.add_field(name="編集前", value=before.content if before.content else "(空または画像のみ)", inline=False)
+  embed.add_field(name="編集後", value=after.content if after.content else "(空または画像のみ)", inline=False)
+
+  await channel.send(embed=embed)
 
 
 # --- メッセージ削除検知イベント ---
 @bot.event
 async def on_message_delete(message):
+  global LOG_CHANNEL_ID
   if message.author.bot:
     return
-  if not message.guild:
+  if LOG_CHANNEL_ID is None:
     return
 
-  guild_id = message.guild.id
-  log_entry = {
-      "type": "削除",
-      "author": f"{message.author} (ID: {message.author.id})",
-      "channel": message.channel.mention,
-      "content": message.content if message.content else "(空または画像のみ)",
-      "time": datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-  }
-  MESSAGE_LOGS[guild_id].append(log_entry)
+  channel = bot.get_channel(LOG_CHANNEL_ID)
+  if channel is None:
+    try:
+      channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+    except Exception:
+      return
+
+  embed = discord.Embed(
+      title="🗑️ メッセージが削除されました",
+      color=discord.Color.red(),
+      timestamp=datetime.datetime.now(datetime.timezone.utc),
+  )
+  embed.add_field(name="投稿者", value=f"{message.author} (`{message.author.id}`)", inline=False)
+  embed.add_field(name="チャンネル", value=message.channel.mention, inline=False)
+  embed.add_field(name="削除された内容", value=message.content if message.content else "(空または画像のみ)", inline=False)
+
+  await channel.send(embed=embed)
 
 
 # --- ウェルカムメッセージ送信イベント ---
