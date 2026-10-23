@@ -1,3 +1,4 @@
+
 import datetime
 import io
 import os
@@ -681,19 +682,17 @@ async def on_message(message: discord.Message):
                   delete_after=10,
               )
             elif action == "delete":
-              pass  # 下部のメッセージ削除処理で対応
+              pass  # メッセージ削除のみ
 
-            # 対象となったユーザーの履歴をクリア
             user_history.clear()
           except discord.Forbidden:
             print("権限不足のためスパム処置を実行できませんでした。")
           except Exception as e:
             print(f"スパム処置エラー: {e}")
 
-          # メッセージ削除またはアクション実行時に該当メッセージを消す
           try:
             await message.delete()
-            return  # スパムと判定された場合は以降のリンク置換等を処理しない
+            return  # スパム判定時は以降の処理を中断
           except Exception:
             pass
 
