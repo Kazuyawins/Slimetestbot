@@ -324,13 +324,21 @@ async def doctor(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# --- グローバルチャット接続コマンド（ルール表示＆同意ボタン） ---
+# --- グローバルチャット接続コマンド（管理者のみ・実行者にのみ規約を非公開表示） ---
 @bot.tree.command(
     name="setglobal",
-    description="【管理者用】グローバルチャットのルールを表示し、同意パネルを設置します",
+    description="【管理者用】グローバルチャットの利用規約を表示し、同意パネルを設置します",
 )
-@app_commands.default_permissions(manage_channels=True)
+@app_commands.default_permissions(administrator=True)
 async def setglobal(interaction: discord.Interaction):
+  # 管理者チェック
+  if not interaction.user.guild_permissions.administrator:
+    await interaction.response.send_message(
+        "❌ このコマンドを実行するにはサーバーの管理者権限が必要です。",
+        ephemeral=True,
+    )
+    return
+
   embed = discord.Embed(
       title="🌐 グローバルチャット 利用規約・ルール",
       description=(
@@ -339,14 +347,14 @@ async def setglobal(interaction: discord.Interaction):
           "1. 荒らし行為、スパム、暴言、公序良俗に反する発言は禁止です。\n"
           "2. 他のサーバーのユーザーに対して迷惑をかける行為を行わないでください。\n"
           "3. ルールに違反した場合、グローバルチャットの利用が制限（BAN）されます。\n\n"
-          "下の **「同意して参加する」** ボタンを押すことで、チャットが有効になります。"
+          "下の **「同意して参加する」** ボタンを押すことで、このチャンネルがグローバルチャットに参加します。"
       ),
       color=discord.Color.blue(),
   )
   view = GlobalAgreeView()
-  await interaction.channel.send(embed=embed, view=view)
+  # 実行した管理者だけにプライベート表示（ephemeral=True）で規約とボタンを送信
   await interaction.response.send_message(
-      "✅ グローバルチャットの同意パネルを設置しました。", ephemeral=True
+      embed=embed, view=view, ephemeral=True
   )
 
 
@@ -364,9 +372,9 @@ class GlobalAgreeView(discord.ui.View):
       self, interaction: discord.Interaction, button: discord.ui.Button
   ):
     global GLOBAL_CHANNELS
-    if not interaction.user.guild_permissions.manage_channels:
+    if not interaction.user.guild_permissions.administrator:
       await interaction.response.send_message(
-          "❌ このボタンを押すにはチャンネル管理権限が必要です。", ephemeral=True
+          "❌ このボタンを押すには管理者権限が必要です。", ephemeral=True
       )
       return
 
@@ -374,10 +382,23 @@ class GlobalAgreeView(discord.ui.View):
     if channel_id not in GLOBAL_CHANNELS:
       GLOBAL_CHANNELS.add(channel_id)
 
+    # 参加完了をボタンを押した本人に通知
     await interaction.response.send_message(
-        f"🎉 グローバルチャットへの参加が完了しました！このチャンネル（{interaction.channel.mention}）でメッセージの送受信が可能です。",
-        ephemeral=True,
+        "🎉 グローバルチャットへの参加が完了しました！", ephemeral=True
     )
+
+    # チャンネル全体に向けて「グローバルチャットに参加しました」という埋め込みメッセージを送信
+    join_embed = discord.Embed(
+        title="🌐 グローバルチャット接続完了",
+        description=(
+            f"このチャンネル（{interaction.channel.mention}）がグローバルチャットに参加しました！\n"
+            "他のサーバーのユーザーとメッセージの送受信が可能です。"
+        ),
+        color=discord.Color.green(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    join_embed.set_footer(text=f"実行者: {interaction.user.display_name}")
+    await interaction.channel.send(embed=join_embed)
 
 
 # --- グローバルチャット解除コマンド ---
