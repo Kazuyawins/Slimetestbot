@@ -342,7 +342,7 @@ class RoleButtonView(discord.ui.View):
     super().__init__(timeout=None)
     self.role_id = role_id
     custom_id = f"role_button_{role_id}" if role_id else "role_button_default"
-    
+
     self.add_item(
         discord.ui.Button(
             label=button_label,
