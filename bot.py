@@ -32,6 +32,9 @@ WELCOME_DESCRIPTION = "{member.mention} さん、**{guild.name}** へようこ�
 LEAVE_GUILD_ID = None
 LEAVE_CHANNEL_ID = None
 
+# カスタム返信（完全一致）用辞書 {guild_id: {keyword: response_text}}
+CUSTOM_RESPONSES = {}
+
 JST = ZoneInfo("Asia/Tokyo")
 
 YOUTUBE_PATTERN = re.compile(
@@ -136,6 +139,50 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
       view=view,
       ephemeral=True,
   )
+
+
+# --- カスタム返信登録コマンド ---
+@bot.tree.command(
+    name="addresponse",
+    description="【管理者用】メッセージが完全一致したときにBotが返す返信を登録します",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    keyword="完全一致させるキーワード",
+    response="Botが返す返信内容",
+)
+async def addresponse(interaction: discord.Interaction, keyword: str, response: str):
+  guild_id = interaction.guild.id
+  if guild_id not in CUSTOM_RESPONSES:
+    CUSTOM_RESPONSES[guild_id] = {}
+
+  CUSTOM_RESPONSES[guild_id][keyword] = response
+  await interaction.response.send_message(
+      f"✅ キーワード「`{keyword}`」に対するカスタム返信を登録しました！\n**返信内容:** {response}",
+      ephemeral=True,
+  )
+
+
+# --- カスタム返信削除コマンド ---
+@bot.tree.command(
+    name="delresponse",
+    description="【管理者用】登録したカスタム返信を削除します",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(keyword="削除したいキーワード")
+async def delresponse(interaction: discord.Interaction, keyword: str):
+  guild_id = interaction.guild.id
+  if guild_id in CUSTOM_RESPONSES and keyword in CUSTOM_RESPONSES[guild_id]:
+    del CUSTOM_RESPONSES[guild_id][keyword]
+    await interaction.response.send_message(
+        f"🗑️ キーワード「`{keyword}`」のカスタム返信を削除しました。",
+        ephemeral=True,
+    )
+  else:
+    await interaction.response.send_message(
+        f"❌ キーワード「`{keyword}`」は登録されていません。",
+        ephemeral=True,
+    )
 
 
 # --- ウェルカムメッセージ設定コマンド ---
@@ -341,7 +388,6 @@ class CaptchaPanelView(discord.ui.View):
   async def start_auth(
       self, interaction: discord.Interaction, button: discord.ui.Button
   ):
-    # 永続化によりロール情報が直接保持されていない場合の保険
     target_role = self.role
     if not target_role:
       await interaction.response.send_message(
@@ -463,7 +509,7 @@ class DeleteLinkView(discord.ui.View):
 async def on_ready():
   print(f"ログインしました: {bot.user.name}")
 
-  # ── 永続ビューの再登録（これにより再起動後もボタンが生き続けます） ──
+  # 認証パネルを永続化するために再登録
   bot.add_view(CaptchaPanelView())
 
   try:
@@ -566,6 +612,13 @@ async def on_member_remove(member: discord.Member):
 async def on_message(message: discord.Message):
   if message.author.bot:
     return
+
+  # --- カスタム返信（完全一致）のチェック ---
+  if message.guild:
+    guild_id = message.guild.id
+    if guild_id in CUSTOM_RESPONSES and message.content in CUSTOM_RESPONSES[guild_id]:
+      await message.channel.send(CUSTOM_RESPONSES[guild_id][message.content])
+      return  # 返信した場合は以降のリンク置換処理などをスキップ
 
   content = message.content
   replaced = False
