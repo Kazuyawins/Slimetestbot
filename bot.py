@@ -331,7 +331,6 @@ async def doctor(interaction: discord.Interaction):
 )
 @app_commands.default_permissions(administrator=True)
 async def setglobal(interaction: discord.Interaction):
-  # 管理者チェック
   if not interaction.user.guild_permissions.administrator:
     await interaction.response.send_message(
         "❌ このコマンドを実行するにはサーバーの管理者権限が必要です。",
@@ -352,7 +351,6 @@ async def setglobal(interaction: discord.Interaction):
       color=discord.Color.blue(),
   )
   view = GlobalAgreeView()
-  # 実行した管理者だけにプライベート表示（ephemeral=True）で規約とボタンを送信
   await interaction.response.send_message(
       embed=embed, view=view, ephemeral=True
   )
@@ -361,7 +359,7 @@ async def setglobal(interaction: discord.Interaction):
 class GlobalAgreeView(discord.ui.View):
 
   def __init__(self):
-    super().__init__(timeout=None)
+    super().__init__(timeout=None)  # 永続化
 
   @discord.ui.button(
       label="同意して参加する",
@@ -382,12 +380,10 @@ class GlobalAgreeView(discord.ui.View):
     if channel_id not in GLOBAL_CHANNELS:
       GLOBAL_CHANNELS.add(channel_id)
 
-    # 参加完了をボタンを押した本人に通知
     await interaction.response.send_message(
         "🎉 グローバルチャットへの参加が完了しました！", ephemeral=True
     )
 
-    # チャンネル全体に向けて「グローバルチャットに参加しました」という埋め込みメッセージを送信
     join_embed = discord.Embed(
         title="🌐 グローバルチャット接続完了",
         description=(
@@ -655,16 +651,17 @@ async def role_panel(
 
 class RoleButtonView(discord.ui.View):
 
-  def __init__(self, role: discord.Role, button_label: str):
-    super().__init__(timeout=None)
+  def __init__(self, role: discord.Role = None, button_label: str = "ロールを受け取る"):
+    super().__init__(timeout=None)  # 永続化
     self.role = role
-    self.add_item(
-        discord.ui.Button(
-            label=button_label,
-            style=discord.ButtonStyle.primary,
-            custom_id=f"role_button_{role.id}",
-        )
-    )
+    if role:
+      self.add_item(
+          discord.ui.Button(
+              label=button_label,
+              style=discord.ButtonStyle.primary,
+              custom_id=f"role_button_{role.id}",
+          )
+      )
 
   async def interaction_check(self, interaction: discord.Interaction) -> bool:
     role_id = int(interaction.custom_id.split("_")[-1])
@@ -843,7 +840,7 @@ def create_captcha_image(code):
 class CaptchaPanelView(discord.ui.View):
 
   def __init__(self, role: discord.Role = None):
-    super().__init__(timeout=None)
+    super().__init__(timeout=None)  # 永続化
     self.role = role
 
   @discord.ui.button(
@@ -937,12 +934,17 @@ class CaptchaModal(discord.ui.Modal, title="CAPTCHA画像認証"):
       )
 
 
+# ---------------------------------------------------------
+# 🤖 起動時処理（ボタンをずっと生かすための永続ビュー登録）
+# ---------------------------------------------------------
 @bot.event
 async def on_ready():
   print(f"ログインしました: {bot.user.name}")
 
+  # 再起動後もボタンが機能し続けるようにビューを常時登録
   bot.add_view(CaptchaPanelView(None))
   bot.add_view(GlobalAgreeView())
+  bot.add_view(RoleButtonView(None))
 
   try:
     synced = await bot.tree.sync()
