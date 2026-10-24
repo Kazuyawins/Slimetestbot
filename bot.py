@@ -697,20 +697,23 @@ class DeleteLinkView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-  print(f"ログインしました: {bot.user.name}")
+    print(f"ログインしました: {bot.user} (ID: {bot.user.id})")
 
-  bot.add_view(CaptchaPanelView())
-  bot.add_view(RoleButtonView())
+    if not getattr(bot, "_persistent_views_added", False):
+        bot.add_view(CaptchaPanelView())
+        bot.add_view(RoleButtonView())
+        bot._persistent_views_added = True
 
-  try:
-    synced = await bot.tree.sync()
-    print(f"{len(synced)}個のスラッシュコマンドを同期しました。")
-  except Exception as e:
-    print(f"コマンドの同期に失敗しました: {e}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"グローバル同期成功: {len(synced)} 個のコマンド")
+        print("同期済みコマンド:", ", ".join(cmd.name for cmd in synced))
 
-  if not send_date_announcement.is_running():
-    send_date_announcement.start()
+    except Exception as e:
+        print(f"グローバル同期エラー ({type(e).__name__}): {e}")
 
+    if not send_date_announcement.is_running():
+        send_date_announcement.start()
 
 @bot.event
 async def on_member_join(member: discord.Member):
