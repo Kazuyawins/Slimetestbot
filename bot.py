@@ -27,7 +27,7 @@ def load_notification_channel_id():
   env_channel = os.getenv("CHANNEL_ID")
   if env_channel and env_channel.isdigit():
     return int(env_channel)
-  
+
   if os.path.exists(CONFIG_FILE):
     try:
       with open(CONFIG_FILE, "r") as f:
@@ -49,8 +49,9 @@ NOTIFICATION_CHANNEL_ID = load_notification_channel_id()
 
 # ウェルカムメッセージの設定保持用変数
 WELCOME_CHANNEL_ID = None
-WELCOME_TITLE = "🎉 メンバーが参加しました！"
-WELCOME_DESCRIPTION = "{member.mention} さん、**{guild.name}** へようこそ！\n\nルールを確認してサーバーをお楽しみください！"
+WELCOME_ENABLED = False  # オン・オフ切り替え用
+WELCOME_MENTION = True   # メンションあり・なし切り替え用
+WELCOME_TEXT = "🎉 {guild.name} へようこそ！\n\nルールを確認してサーバーをお楽しみください！"
 
 # 退出通知用の変数
 LEAVE_GUILD_ID = None
@@ -111,7 +112,7 @@ async def send_date_announcement():
   now = datetime.datetime.now(JST)
   weekdays = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
   weekday_str = weekdays[now.weekday()]
-  message_text = f"📅 日付が変わりました！\n本日は **{now.month}月{now.day}日 ({weekday_str})** です。"
+  message_text = f"📅 日付が変わりました！\n本日は {now.month}月{now.day}日 ({weekday_str}) です。"
   await channel.send(message_text)
 
 
@@ -129,7 +130,7 @@ async def setchannel(interaction: discord.Interaction):
   global NOTIFICATION_CHANNEL_ID
   NOTIFICATION_CHANNEL_ID = interaction.channel.id
   save_notification_channel_id(NOTIFICATION_CHANNEL_ID)
-  
+
   await interaction.response.send_message(
       f"✅ このチャンネル（{interaction.channel.mention}）を日付お知らせの送信先として設定し、保存しました！",
       ephemeral=True,
@@ -146,7 +147,7 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
   now = datetime.datetime.now(JST)
   weekdays = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
   weekday_str = weekdays[now.weekday()]
-  date_text = f"🧪 **【テスト】日付お知らせ確認**\n本日は **{now.month}月{now.day}日 ({weekday_str})** です。"
+  date_text = f"🧪 【テスト】日付お知らせ確認\n本日は {now.month}月{now.day}日 ({weekday_str}) です。"
 
   test_role = role if role else interaction.guild.default_role
 
@@ -155,14 +156,14 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
       description=(
           "これは認証システムのテストパネルです。\n"
           f"対象ロール: {test_role.mention}\n\n"
-          "下の **「認証を開始する」** ボタンを押して、画像認証が正常に動作するかテストしてください。"
+          "下の 「認証を開始する」 ボタンを押して、画像認証が正常に動作するかテストしてください。"
       ),
       color=discord.Color.orange(),
   )
-  view = CaptchaPanelView(test_role)
+  view = CaptchaPanelView(test_role.id)
 
   await interaction.response.send_message(
-      f"✅ テストメッセージを送信します。\n1️⃣ **日付お知らせのテスト:**\n{date_text}\n\n2️⃣ **認証パネルのテスト:**",
+      f"✅ テストメッセージを送信します。\n1️⃣ 日付お知らせのテスト:\n{date_text}\n\n2️⃣ 認証パネルのテスト:",
       embed=embed,
       view=view,
       ephemeral=True,
@@ -361,7 +362,7 @@ async def addresponse(interaction: discord.Interaction, keyword: str, response: 
 
   CUSTOM_RESPONSES[guild_id][keyword] = response
   await interaction.response.send_message(
-      f"✅ キーワード「`{keyword}`」に対するカスタム返信を登録しました！\n**返信内容:** {response}",
+      f"✅ キーワード「{keyword}」に対するカスタム返信を登録しました！\n返信内容: {response}",
       ephemeral=True,
   )
 
@@ -377,35 +378,44 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
   if guild_id in CUSTOM_RESPONSES and keyword in CUSTOM_RESPONSES[guild_id]:
     del CUSTOM_RESPONSES[guild_id][keyword]
     await interaction.response.send_message(
-        f"🗑️ キーワード「`{keyword}`」のカスタム返信を削除しました。",
+        f"🗑️ キーワード「{keyword}」のカスタム返信を削除しました。",
         ephemeral=True,
     )
   else:
     await interaction.response.send_message(
-        f"❌ キーワード「`{keyword}`」は登録されていません。",
+        f"❌ キーワード「{keyword}」は登録されていません。",
         ephemeral=True,
     )
 
 
 @bot.tree.command(
     name="setwelcome",
-    description="【管理者用】ウェルカムメッセージの送信先と表示内容を設定します",
+    description="【管理者用】ウェルカムメッセージのオンオフ、メンション有無、送信内容を設定します",
 )
 @app_commands.default_permissions(manage_channels=True)
 @app_commands.describe(
-    title="埋め込みのタイトル",
-    description="本文（{member.mention} で参加者をメンションできます）",
+    enabled="ウェルカムメッセージを有効にするか (True: オン, False: オフ)",
+    mention="メンバーをメンションするか (True: あり, False: なし)",
+    text="送信する本文（例: サーバーへようこそ！）",
 )
 async def setwelcome(
-    interaction: discord.Interaction, title: str, description: str
+    interaction: discord.Interaction, enabled: bool, mention: bool, text: str
 ):
-  global WELCOME_CHANNEL_ID, WELCOME_TITLE, WELCOME_DESCRIPTION
+  global WELCOME_CHANNEL_ID, WELCOME_ENABLED, WELCOME_MENTION, WELCOME_TEXT
   WELCOME_CHANNEL_ID = interaction.channel.id
-  WELCOME_TITLE = title
-  WELCOME_DESCRIPTION = description
+  WELCOME_ENABLED = enabled
+  WELCOME_MENTION = mention
+  WELCOME_TEXT = text
+
+  status_str = "🟢 有効 (オン)" if enabled else "🔴 無効 (オフ)"
+  mention_str = "あり" if mention else "なし"
 
   await interaction.response.send_message(
-      f"✅ このチャンネル（{interaction.channel.mention}）をウェルカムメッセージの送信先に設定し、内容を保存しました！",
+      f"✅ ウェルカムメッセージの設定を保存しました！\n"
+      f"・**状態:** {status_str}\n"
+      f"・**送信チャンネル:** {interaction.channel.mention}\n"
+      f"・**メンション:** {mention_str}\n"
+      f"・**本文:** {text}",
       ephemeral=True,
   )
 
@@ -431,7 +441,7 @@ async def setleave(interaction: discord.Interaction):
 async def ping(interaction: discord.Interaction):
   latency = round(bot.latency * 1000)
   await interaction.response.send_message(
-      f"🏓 ポン！ 応答速度: **{latency}ms**", ephemeral=True
+      f"🏓 ポン！ 応答速度: {latency}ms", ephemeral=True
   )
 
 
@@ -506,12 +516,12 @@ async def captcha_setup(interaction: discord.Interaction, role: discord.Role):
   embed = discord.Embed(
       title="🔒 サーバー認証",
       description=(
-          "サーバーへようこそ！\n下の **「認証を開始する」** ボタンを押して、"
+          "サーバーへようこそ！\n下の 「認証を開始する」 ボタンを押して、"
           "表示される画像認証をクリアしてください。"
       ),
       color=discord.Color.blue(),
   )
-  view = CaptchaPanelView(role)
+  view = CaptchaPanelView(role.id)
   await interaction.channel.send(embed=embed, view=view)
   await interaction.response.send_message(
       "✅ 認証パネルを設置しました！", ephemeral=True
@@ -564,24 +574,35 @@ def create_captcha_image(code):
   return buffer
 
 
-class CaptchaPanelView(discord.ui.View):
+class CaptchaStartButton(discord.ui.Button):
+  def __init__(self, role_id: int = None):
+    custom_id = f"captcha_start_{role_id}" if role_id else "captcha_start_default"
+    super().__init__(
+        label="認証を開始する",
+        style=discord.ButtonStyle.success,
+        custom_id=custom_id,
+    )
+    self.role_id = role_id
 
-  def __init__(self, role: discord.Role = None):
-    super().__init__(timeout=None)
-    self.role = role
+  async def callback(self, interaction: discord.Interaction):
+    target_role_id = self.role_id
+    if not target_role_id:
+      custom_id = (interaction.data or {}).get("custom_id", "")
+      parts = custom_id.split("_")
+      if parts and parts[-1].isdigit():
+        target_role_id = int(parts[-1])
 
-  @discord.ui.button(
-      label="認証を開始する",
-      style=discord.ButtonStyle.success,
-      custom_id="start_captcha",
-  )
-  async def start_auth(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    target_role = self.role
+    if interaction.guild is None:
+      await interaction.response.send_message(
+          "❌ サーバー内でのみ使用できます。", ephemeral=True
+      )
+      return
+
+    target_role = interaction.guild.get_role(target_role_id) if target_role_id else None
     if not target_role:
       await interaction.response.send_message(
-          "❌ 認証ロールが設定されていません。", ephemeral=True
+          "❌ 認証ロールが設定されていません。管理者にパネルの再作成を依頼してください。",
+          ephemeral=True,
       )
       return
 
@@ -602,6 +623,13 @@ class CaptchaPanelView(discord.ui.View):
         view=view,
         ephemeral=True,
     )
+
+
+class CaptchaPanelView(discord.ui.View):
+  def __init__(self, role_id: int = None):
+    super().__init__(timeout=None)
+    self.role_id = role_id
+    self.add_item(CaptchaStartButton(role_id))
 
 
 class CaptchaInputPromptView(discord.ui.View):
@@ -697,28 +725,28 @@ class DeleteLinkView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    print(f"ログインしました: {bot.user} (ID: {bot.user.id})")
+  print(f"ログインしました: {bot.user} (ID: {bot.user.id})")
 
-    if not getattr(bot, "_persistent_views_added", False):
-        bot.add_view(CaptchaPanelView())
-        bot.add_view(RoleButtonView())
-        bot._persistent_views_added = True
+  if not getattr(bot, "_persistent_views_added", False):
+    bot.add_view(CaptchaPanelView())
+    bot.add_view(RoleButtonView())
+    bot._persistent_views_added = True
 
-    try:
-        synced = await bot.tree.sync()
-        print(f"グローバル同期成功: {len(synced)} 個のコマンド")
-        print("同期済みコマンド:", ", ".join(cmd.name for cmd in synced))
+  try:
+    synced = await bot.tree.sync()
+    print(f"グローバル同期成功: {len(synced)} 個のコマンド")
+    print("同期済みコマンド:", ", ".join(cmd.name for cmd in synced))
+  except Exception as e:
+    print(f"グローバル同期エラー ({type(e).__name__}): {e}")
 
-    except Exception as e:
-        print(f"グローバル同期エラー ({type(e).__name__}): {e}")
+  if not send_date_announcement.is_running():
+    send_date_announcement.start()
 
-    if not send_date_announcement.is_running():
-        send_date_announcement.start()
 
 @bot.event
 async def on_member_join(member: discord.Member):
-  global WELCOME_CHANNEL_ID, WELCOME_TITLE, WELCOME_DESCRIPTION
-  if WELCOME_CHANNEL_ID is None:
+  global WELCOME_CHANNEL_ID, WELCOME_ENABLED, WELCOME_MENTION, WELCOME_TEXT
+  if not WELCOME_ENABLED or WELCOME_CHANNEL_ID is None:
     return
 
   channel = bot.get_channel(WELCOME_CHANNEL_ID)
@@ -728,21 +756,14 @@ async def on_member_join(member: discord.Member):
     except Exception:
       return
 
-  formatted_description = (
-      WELCOME_DESCRIPTION.replace("{member.mention}", member.mention)
-      .replace("{member.name}", member.name)
-      .replace("{guild.name}", member.guild.name)
-  )
+  formatted_text = WELCOME_TEXT.replace("{guild.name}", member.guild.name).replace("{member.name}", member.name)
+  
+  if WELCOME_MENTION:
+    final_message = f"{member.mention} {formatted_text}"
+  else:
+    final_message = formatted_text
 
-  embed = discord.Embed(
-      title=WELCOME_TITLE,
-      description=formatted_description,
-      color=discord.Color.green(),
-  )
-  if member.avatar:
-    embed.set_thumbnail(url=member.avatar.url)
-
-  await channel.send(embed=embed)
+  await channel.send(final_message)
 
 
 @bot.event
@@ -788,8 +809,8 @@ async def on_member_remove(member: discord.Member):
   embed = discord.Embed(
       title="🚪 メンバーが退出しました",
       description=(
-          f"**ユーザー:** {member} (`{member.id}`)\n"
-          f"**滞在時間:** {time_str}"
+          f"ユーザー: {member} ({member.id})\n"
+          f"滞在時間: {time_str}"
       ),
       color=discord.Color.red(),
   )
