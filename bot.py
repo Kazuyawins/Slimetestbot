@@ -47,11 +47,8 @@ def save_notification_channel_id(channel_id):
 
 NOTIFICATION_CHANNEL_ID = load_notification_channel_id()
 
-# ウェルカムメッセージの設定保持用変数
-WELCOME_CHANNEL_ID = None
-WELCOME_ENABLED = False  # オン・オフ切り替え用
-WELCOME_MENTION = True   # メンションあり・なし切り替え用
-WELCOME_TEXT = "🎉 {guild.name} へようこそ！\n\nルールを確認してサーバーをお楽しみください！"
+# --- サーバーごとのウェルカムメッセージ設定保持用辞書 {guild_id: settings} ---
+WELCOME_SETTINGS = {}
 
 # 退出通知用の変数
 LEAVE_GUILD_ID = None
@@ -390,7 +387,7 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
 
 @bot.tree.command(
     name="setwelcome",
-    description="【管理者用】ウェルカムメッセージのオンオフ、メンション有無、送信内容を設定します",
+    description="【管理者用】このサーバーのウェルカムメッセージを設定します",
 )
 @app_commands.default_permissions(manage_channels=True)
 @app_commands.describe(
@@ -401,17 +398,19 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
 async def setwelcome(
     interaction: discord.Interaction, enabled: bool, mention: bool, text: str
 ):
-  global WELCOME_CHANNEL_ID, WELCOME_ENABLED, WELCOME_MENTION, WELCOME_TEXT
-  WELCOME_CHANNEL_ID = interaction.channel.id
-  WELCOME_ENABLED = enabled
-  WELCOME_MENTION = mention
-  WELCOME_TEXT = text
+  guild_id = interaction.guild.id
+  WELCOME_SETTINGS[guild_id] = {
+      "channel_id": interaction.channel.id,
+      "enabled": enabled,
+      "mention": mention,
+      "text": text,
+  }
 
   status_str = "🟢 有効 (オン)" if enabled else "🔴 無効 (オフ)"
   mention_str = "あり" if mention else "なし"
 
   await interaction.response.send_message(
-      f"✅ ウェルカムメッセージの設定を保存しました！\n"
+      f"✅ このサーバーのウェルカムメッセージ設定を保存しました！\n"
       f"・**状態:** {status_str}\n"
       f"・**送信チャンネル:** {interaction.channel.mention}\n"
       f"・**メンション:** {mention_str}\n"
@@ -745,20 +744,29 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member: discord.Member):
-  global WELCOME_CHANNEL_ID, WELCOME_ENABLED, WELCOME_MENTION, WELCOME_TEXT
-  if not WELCOME_ENABLED or WELCOME_CHANNEL_ID is None:
+  guild_id = member.guild.id
+  if guild_id not in WELCOME_SETTINGS:
     return
 
-  channel = bot.get_channel(WELCOME_CHANNEL_ID)
+  settings = WELCOME_SETTINGS[guild_id]
+  if not settings.get("enabled", False):
+    return
+
+  channel_id = settings.get("channel_id")
+  if channel_id is None:
+    return
+
+  channel = bot.get_channel(channel_id)
   if channel is None:
     try:
-      channel = await bot.fetch_channel(WELCOME_CHANNEL_ID)
+      channel = await bot.fetch_channel(channel_id)
     except Exception:
       return
 
-  formatted_text = WELCOME_TEXT.replace("{guild.name}", member.guild.name).replace("{member.name}", member.name)
+  text = settings.get("text", "")
+  formatted_text = text.replace("{guild.name}", member.guild.name).replace("{member.name}", member.name)
   
-  if WELCOME_MENTION:
+  if settings.get("mention", True):
     final_message = f"{member.mention} {formatted_text}"
   else:
     final_message = formatted_text
