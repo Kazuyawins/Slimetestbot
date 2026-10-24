@@ -4,6 +4,7 @@ import os
 import random
 import re
 import string
+from collections import defaultdict, deque
 from aiohttp import web
 import discord
 from discord import app_commands
@@ -15,19 +16,18 @@ from zoneinfo import ZoneInfo
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- チャンネルIDの永続化ファイル管理 ---
+# --- 設定の永続化ファイル管理 ---
 CONFIG_FILE = "channel_config.txt"
 
 def load_notification_channel_id():
-  # 1. まず環境変数を確認
   env_channel = os.getenv("CHANNEL_ID")
   if env_channel and env_channel.isdigit():
     return int(env_channel)
   
-  # 2. 保存ファイルがあればそこから読み込む
   if os.path.exists(CONFIG_FILE):
     try:
       with open(CONFIG_FILE, "r") as f:
@@ -52,12 +52,15 @@ WELCOME_CHANNEL_ID = None
 WELCOME_TITLE = "🎉 メンバーが参加しました！"
 WELCOME_DESCRIPTION = "{member.mention} さん、**{guild.name}** へようこそ！\n\nルールを確認してサーバーをお楽しみください！"
 
-# 退出通知用の変数（どのサーバーのどのチャンネルかを管理）
+# 退出通知用の変数
 LEAVE_GUILD_ID = None
 LEAVE_CHANNEL_ID = None
 
-# カスタム返信（完全一致）用辞書 {guild_id: {keyword: response_text}}
+# カスタム返信（完全一致）用辞書
 CUSTOM_RESPONSES = {}
+
+# リアクションロール管理用 {message_id: {emoji_str: role_id}}
+REACTION_ROLES = {}
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -125,7 +128,6 @@ async def before_send_date_announcement():
 async def setchannel(interaction: discord.Interaction):
   global NOTIFICATION_CHANNEL_ID
   NOTIFICATION_CHANNEL_ID = interaction.channel.id
-  # 変更時にファイルへ永続保存する
   save_notification_channel_id(NOTIFICATION_CHANNEL_ID)
   
   await interaction.response.send_message(
@@ -134,7 +136,6 @@ async def setchannel(interaction: discord.Interaction):
   )
 
 
-# --- テストコマンド（日付送信確認 ＆ 認証パネルの生存確認） ---
 @bot.tree.command(
     name="test",
     description="【管理者用】日付お知らせのテスト送信と認証パネルの動作テストを行います",
@@ -168,7 +169,173 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
   )
 
 
-# --- カスタム返信登録コマンド ---
+# --- ロール付与パネル作成コマンド（リアクション or パネルボタン選択） ---
+@bot.tree.command(
+    name="addrole",
+    description="【管理者用】リアクションまたはボタンでロールを付与・解除できるパネルを作成します",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    role="付与・解除するロール",
+    method="付与方式を選択してください",
+    title="埋め込みのタイトル",
+    description="説明文",
+    button_or_emoji="ボタンの文字 または リアクション用絵文字",
+)
+@app_commands.choices(
+    method=[
+        app_commands.Choice(name="ボタン (Button)", value="button"),
+        app_commands.Choice(name="リアクション (Reaction)", value="reaction"),
+    ]
+)
+async def addrole(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    method: str,
+    title: str,
+    description: str,
+    button_or_emoji: str,
+):
+  if interaction.guild.me.top_role <= role:
+    await interaction.response.send_message(
+        "❌ 指定されたロールがボットのロールよりも上にあるため、管理できません。",
+        ephemeral=True,
+    )
+    return
+
+  embed = discord.Embed(
+      title=title, description=description, color=discord.Color.blue()
+  )
+
+  if method == "button":
+    view = RoleButtonView(role.id, button_or_emoji)
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.response.send_message(
+        "✅ ボタン式のロールパネルを作成しました！", ephemeral=True
+    )
+  elif method == "reaction":
+    embed.add_field(name="付与ロール", value=role.mention)
+    embed.set_footer(text=f"下のリアクション ({button_or_emoji}) を押すとロールが切り替わります")
+    msg = await interaction.channel.send(embed=embed)
+    try:
+      await msg.add_reaction(button_or_emoji)
+    except Exception as e:
+      await interaction.response.send_message(
+          f"❌ 絵文字の追加に失敗しました。正しい絵文字か確認してください: {e}",
+          ephemeral=True,
+      )
+      return
+
+    emoji_key = str(button_or_emoji)
+    REACTION_ROLES[msg.id] = {emoji_key: role.id}
+    await interaction.response.send_message(
+        "✅ リアクション式のロールパネルを作成しました！", ephemeral=True
+    )
+
+
+class RoleButtonView(discord.ui.View):
+
+  def __init__(self, role_id: int = None, button_label: str = "ロールを受け取る"):
+    super().__init__(timeout=None)
+    self.role_id = role_id
+    custom_id = f"role_button_{role_id}" if role_id else "role_button_default"
+
+    self.add_item(
+        discord.ui.Button(
+            label=button_label,
+            style=discord.ButtonStyle.primary,
+            custom_id=custom_id,
+        )
+    )
+
+  async def interaction_check(self, interaction: discord.Interaction) -> bool:
+    role_id = self.role_id
+    if not role_id and interaction.data.get("custom_id"):
+      parts = interaction.data["custom_id"].split("_")
+      if parts[-1].isdigit():
+        role_id = int(parts[-1])
+
+    role = interaction.guild.get_role(role_id) if role_id else None
+    if not role:
+      await interaction.response.send_message(
+          "❌ ロールが見つかりませんでした。", ephemeral=True
+      )
+      return False
+
+    try:
+      if role in interaction.user.roles:
+        await interaction.user.remove_roles(role)
+        await interaction.response.send_message(
+            f"❌ ロール「{role.name}」を解除しました。", ephemeral=True
+        )
+      else:
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(
+            f"🎉 ロール「{role.name}」を付与しました！", ephemeral=True
+        )
+    except discord.Forbidden:
+      await interaction.response.send_message(
+          "❌ ボットにロールを管理する権限がありません。", ephemeral=True
+      )
+    except Exception as e:
+      await interaction.response.send_message(
+          f"❌ エラーが発生しました: {e}", ephemeral=True
+      )
+    return True
+
+
+# --- リアクション追加時のロール付与 ---
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+  if payload.member and payload.member.bot:
+    return
+  if payload.message_id not in REACTION_ROLES:
+    return
+
+  guild = bot.get_guild(payload.guild_id)
+  if not guild:
+    return
+
+  emoji_key = str(payload.emoji)
+  role_id = REACTION_ROLES[payload.message_id].get(emoji_key)
+  if not role_id:
+    return
+
+  role = guild.get_role(role_id)
+  if role:
+    member = guild.get_member(payload.user_id)
+    if member and role not in member.roles:
+      try:
+        await member.add_roles(role)
+      except Exception:
+        pass
+
+
+# --- リアクション削除時のロール解除 ---
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+  if payload.message_id not in REACTION_ROLES:
+    return
+
+  guild = bot.get_guild(payload.guild_id)
+  if not guild:
+    return
+
+  emoji_key = str(payload.emoji)
+  role_id = REACTION_ROLES[payload.message_id].get(emoji_key)
+  if not role_id:
+    return
+
+  role = guild.get_role(role_id)
+  if role:
+    member = guild.get_member(payload.user_id)
+    if member and role in member.roles:
+      try:
+        await member.remove_roles(role)
+      except Exception:
+        pass
+
+
 @bot.tree.command(
     name="addresponse",
     description="【管理者用】メッセージが完全一致したときにBotが返す返信を登録します",
@@ -190,7 +357,6 @@ async def addresponse(interaction: discord.Interaction, keyword: str, response: 
   )
 
 
-# --- カスタム返信削除コマンド ---
 @bot.tree.command(
     name="delresponse",
     description="【管理者用】登録したカスタム返信を削除します",
@@ -212,19 +378,14 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
     )
 
 
-# --- ウェルカムメッセージ設定コマンド ---
 @bot.tree.command(
     name="setwelcome",
-    description=(
-        "【管理者用】ウェルカムメッセージの送信先と表示内容を設定します"
-    ),
+    description="【管理者用】ウェルカムメッセージの送信先と表示内容を設定します",
 )
 @app_commands.default_permissions(manage_channels=True)
 @app_commands.describe(
     title="埋め込みのタイトル",
-    description=(
-        "本文（{member.mention} で参加者をメンションできます）"
-    ),
+    description="本文（{member.mention} で参加者をメンションできます）",
 )
 async def setwelcome(
     interaction: discord.Interaction, title: str, description: str
@@ -240,12 +401,9 @@ async def setwelcome(
   )
 
 
-# --- 退出通知（即抜け時間記録）設定コマンド ---
 @bot.tree.command(
     name="setleave",
-    description=(
-        "【管理者用】メンバー退出時の滞在時間記録を送信するチャンネルを設定します"
-    ),
+    description="【管理者用】メンバー退出時の滞在時間記録を送信するチャンネルを設定します",
 )
 @app_commands.default_permissions(manage_channels=True)
 async def setleave(interaction: discord.Interaction):
@@ -268,7 +426,6 @@ async def ping(interaction: discord.Interaction):
   )
 
 
-# --- ユーザーのアバターを表示するコマンド ---
 @bot.tree.command(
     name="avatar", description="指定したユーザー（または自分）のアバターを表示します"
 )
@@ -291,10 +448,9 @@ async def avatar(interaction: discord.Interaction, user: discord.User = None):
       )
   )
 
-  await interaction.response.send_message(embed=embed, view=view)
+  await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-# --- 管理者専用：埋め込みメッセージ送信コマンド ---
 @bot.tree.command(
     name="sendembed",
     description="【管理者用】指定した内容の埋め込み（Embed）メッセージを送信します",
@@ -332,7 +488,6 @@ async def sendembed(
   )
 
 
-# --- CAPTCHA認証パネル設置コマンド ---
 @bot.tree.command(
     name="captcha_setup", description="認証パネル（ボタン）を設置します"
 )
@@ -536,8 +691,8 @@ class DeleteLinkView(discord.ui.View):
 async def on_ready():
   print(f"ログインしました: {bot.user.name}")
 
-  # 認証パネルを永続化するために再登録
   bot.add_view(CaptchaPanelView())
+  bot.add_view(RoleButtonView())
 
   try:
     synced = await bot.tree.sync()
@@ -549,7 +704,6 @@ async def on_ready():
     send_date_announcement.start()
 
 
-# --- ウェルカムメッセージ送信イベント ---
 @bot.event
 async def on_member_join(member: discord.Member):
   global WELCOME_CHANNEL_ID, WELCOME_TITLE, WELCOME_DESCRIPTION
@@ -580,7 +734,6 @@ async def on_member_join(member: discord.Member):
   await channel.send(embed=embed)
 
 
-# --- メンバー退出時の滞在時間（即抜け時間）記録イベント ---
 @bot.event
 async def on_member_remove(member: discord.Member):
   global LEAVE_CHANNEL_ID, LEAVE_GUILD_ID
@@ -640,7 +793,6 @@ async def on_message(message: discord.Message):
   if message.author.bot:
     return
 
-  # --- カスタム返信（完全一致）のチェック ---
   if message.guild:
     guild_id = message.guild.id
     if guild_id in CUSTOM_RESPONSES and message.content in CUSTOM_RESPONSES[guild_id]:
