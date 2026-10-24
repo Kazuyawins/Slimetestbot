@@ -233,34 +233,37 @@ async def addrole(
     )
 
 
-class RoleButtonView(discord.ui.View):
-
+class RoleToggleButton(discord.ui.Button):
   def __init__(self, role_id: int = None, button_label: str = "ロールを受け取る"):
-    super().__init__(timeout=None)
-    self.role_id = role_id
     custom_id = f"role_button_{role_id}" if role_id else "role_button_default"
-
-    self.add_item(
-        discord.ui.Button(
-            label=button_label,
-            style=discord.ButtonStyle.primary,
-            custom_id=custom_id,
-        )
+    super().__init__(
+        label=button_label,
+        style=discord.ButtonStyle.primary,
+        custom_id=custom_id,
     )
+    self.role_id = role_id
 
-  async def interaction_check(self, interaction: discord.Interaction) -> bool:
+  async def callback(self, interaction: discord.Interaction):
     role_id = self.role_id
-    if not role_id and interaction.data.get("custom_id"):
-      parts = interaction.data["custom_id"].split("_")
-      if parts[-1].isdigit():
+    if not role_id:
+      custom_id = (interaction.data or {}).get("custom_id", "")
+      parts = custom_id.split("_")
+      if parts and parts[-1].isdigit():
         role_id = int(parts[-1])
 
-    role = interaction.guild.get_role(role_id) if role_id else None
-    if not role:
+    if interaction.guild is None:
       await interaction.response.send_message(
-          "❌ ロールが見つかりませんでした。", ephemeral=True
+          "❌ サーバー内でのみ使用できます。", ephemeral=True
       )
-      return False
+      return
+
+    role = interaction.guild.get_role(role_id) if role_id else None
+    if role is None:
+      await interaction.response.send_message(
+          "❌ ロールが見つかりませんでした。管理者にパネルの再作成を依頼してください。",
+          ephemeral=True,
+      )
+      return
 
     try:
       if role in interaction.user.roles:
@@ -281,7 +284,13 @@ class RoleButtonView(discord.ui.View):
       await interaction.response.send_message(
           f"❌ エラーが発生しました: {e}", ephemeral=True
       )
-    return True
+
+
+class RoleButtonView(discord.ui.View):
+  def __init__(self, role_id: int = None, button_label: str = "ロールを受け取る"):
+    super().__init__(timeout=None)
+    self.role_id = role_id
+    self.add_item(RoleToggleButton(role_id, button_label))
 
 
 # --- リアクション追加時のロール付与 ---
@@ -534,9 +543,9 @@ def create_captcha_image(code):
     draw.point(xy, fill=(random.randint(50, 150),) * 3)
 
   try:
-    font = ImageFont.load_default()
+    font = ImageFont.truetype("DejaVuSans.ttf", 36)
   except Exception:
-    font = None
+    font = ImageFont.load_default()
 
   x = 30
   for char in code:
@@ -546,7 +555,6 @@ def create_captcha_image(code):
         char,
         fill=(random.randint(0, 100),) * 3,
         font=font,
-        font_size=36,
     )
     x += 28
 
