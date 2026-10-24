@@ -27,7 +27,7 @@ def load_notification_channel_id():
   env_channel = os.getenv("CHANNEL_ID")
   if env_channel and env_channel.isdigit():
     return int(env_channel)
-
+  
   if os.path.exists(CONFIG_FILE):
     try:
       with open(CONFIG_FILE, "r") as f:
@@ -129,7 +129,7 @@ async def setchannel(interaction: discord.Interaction):
   global NOTIFICATION_CHANNEL_ID
   NOTIFICATION_CHANNEL_ID = interaction.channel.id
   save_notification_channel_id(NOTIFICATION_CHANNEL_ID)
-
+  
   await interaction.response.send_message(
       f"✅ このチャンネル（{interaction.channel.mention}）を日付お知らせの送信先として設定し、保存しました！",
       ephemeral=True,
@@ -159,7 +159,7 @@ async def test_command(interaction: discord.Interaction, role: discord.Role = No
       ),
       color=discord.Color.orange(),
   )
-  view = CaptchaPanelView(test_role.id)
+  view = CaptchaPanelView(test_role)
 
   await interaction.response.send_message(
       f"✅ テストメッセージを送信します。\n1️⃣ **日付お知らせのテスト:**\n{date_text}\n\n2️⃣ **認証パネルのテスト:**",
@@ -511,7 +511,7 @@ async def captcha_setup(interaction: discord.Interaction, role: discord.Role):
       ),
       color=discord.Color.blue(),
   )
-  view = CaptchaPanelView(role.id)
+  view = CaptchaPanelView(role)
   await interaction.channel.send(embed=embed, view=view)
   await interaction.response.send_message(
       "✅ 認証パネルを設置しました！", ephemeral=True
@@ -564,35 +564,24 @@ def create_captcha_image(code):
   return buffer
 
 
-class CaptchaStartButton(discord.ui.Button):
-  def __init__(self, role_id: int = None):
-    custom_id = f"captcha_start_{role_id}" if role_id else "captcha_start_default"
-    super().__init__(
-        label="認証を開始する",
-        style=discord.ButtonStyle.success,
-        custom_id=custom_id,
-    )
-    self.role_id = role_id
+class CaptchaPanelView(discord.ui.View):
 
-  async def callback(self, interaction: discord.Interaction):
-    target_role_id = self.role_id
-    if not target_role_id:
-      custom_id = (interaction.data or {}).get("custom_id", "")
-      parts = custom_id.split("_")
-      if parts and parts[-1].isdigit():
-        target_role_id = int(parts[-1])
+  def __init__(self, role: discord.Role = None):
+    super().__init__(timeout=None)
+    self.role = role
 
-    if interaction.guild is None:
-      await interaction.response.send_message(
-          "❌ サーバー内でのみ使用できます。", ephemeral=True
-      )
-      return
-
-    target_role = interaction.guild.get_role(target_role_id) if target_role_id else None
+  @discord.ui.button(
+      label="認証を開始する",
+      style=discord.ButtonStyle.success,
+      custom_id="start_captcha",
+  )
+  async def start_auth(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    target_role = self.role
     if not target_role:
       await interaction.response.send_message(
-          "❌ 認証ロールが設定されていません。管理者にパネルの再作成を依頼してください。",
-          ephemeral=True,
+          "❌ 認証ロールが設定されていません。", ephemeral=True
       )
       return
 
@@ -613,13 +602,6 @@ class CaptchaStartButton(discord.ui.Button):
         view=view,
         ephemeral=True,
     )
-
-
-class CaptchaPanelView(discord.ui.View):
-  def __init__(self, role_id: int = None):
-    super().__init__(timeout=None)
-    self.role_id = role_id
-    self.add_item(CaptchaStartButton(role_id))
 
 
 class CaptchaInputPromptView(discord.ui.View):
