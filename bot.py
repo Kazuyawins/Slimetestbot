@@ -1,5 +1,6 @@
 import datetime
 import io
+import json
 import os
 import random
 import re
@@ -20,8 +21,9 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 設定の永続化ファイル管理（再起動後もチャンネルIDを保持） ---
+# --- 設定の永続化ファイル管理 ---
 CONFIG_FILE = "channel_config.txt"
+RESPONSES_FILE = "custom_responses.txt"
 
 def load_notification_channel_id():
   env_channel = os.getenv("CHANNEL_ID")
@@ -30,7 +32,7 @@ def load_notification_channel_id():
 
   if os.path.exists(CONFIG_FILE):
     try:
-      with open(CONFIG_FILE, "r") as f:
+      with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         content = f.read().strip()
         if content.isdigit():
           return int(content)
@@ -40,12 +42,33 @@ def load_notification_channel_id():
 
 def save_notification_channel_id(channel_id):
   try:
-    with open(CONFIG_FILE, "w") as f:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
       f.write(str(channel_id))
   except Exception as e:
     print(f"チャンネル設定の保存に失敗しました: {e}")
 
 NOTIFICATION_CHANNEL_ID = load_notification_channel_id()
+
+# --- カスタム返信（完全一致）の永続化管理 ---
+def load_custom_responses():
+  if os.path.exists(RESPONSES_FILE):
+    try:
+      with open(RESPONSES_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        # JSONのキーは文字列になるため、int（guild_id）に変換
+        return {int(k): v for k, v in data.items()}
+    except Exception as e:
+      print(f"カスタム返신의 読み込みに失敗しました: {e}")
+  return {}
+
+def save_custom_responses():
+  try:
+    with open(RESPONSES_FILE, "w", encoding="utf-8") as f:
+      json.dump(CUSTOM_RESPONSES, f, ensure_ascii=False, indent=2)
+  except Exception as e:
+    print(f"カスタム返信の保存に失敗しました: {e}")
+
+CUSTOM_RESPONSES = load_custom_responses()
 
 # --- サーバーごとのウェルカムメッセージ設定保持用辞書 {guild_id: settings} ---
 WELCOME_SETTINGS = {}
@@ -53,9 +76,6 @@ WELCOME_SETTINGS = {}
 # 退出通知用の変数
 LEAVE_GUILD_ID = None
 LEAVE_CHANNEL_ID = None
-
-# カスタム返信（完全一致）用辞書
-CUSTOM_RESPONSES = {}
 
 # リアクションロール管理用 {message_id: {emoji_str: role_id}}
 REACTION_ROLES = {}
@@ -358,8 +378,9 @@ async def addresponse(interaction: discord.Interaction, keyword: str, response: 
     CUSTOM_RESPONSES[guild_id] = {}
 
   CUSTOM_RESPONSES[guild_id][keyword] = response
+  save_custom_responses()  # ファイルへ保存
   await interaction.response.send_message(
-      f"✅ キーワード「{keyword}」に対するカスタム返信を登録しました！\n返信内容: {response}",
+      f"✅ キーワード「{keyword}」に対するカスタム返信を登録・保存しました！\n返信内容: {response}",
       ephemeral=True,
   )
 
@@ -374,6 +395,7 @@ async def delresponse(interaction: discord.Interaction, keyword: str):
   guild_id = interaction.guild.id
   if guild_id in CUSTOM_RESPONSES and keyword in CUSTOM_RESPONSES[guild_id]:
     del CUSTOM_RESPONSES[guild_id][keyword]
+    save_custom_responses()  # ファイルへ保存
     await interaction.response.send_message(
         f"🗑️ キーワード「{keyword}」のカスタム返信を削除しました。",
         ephemeral=True,
@@ -904,3 +926,4 @@ if __name__ == "__main__":
   import asyncio
 
   asyncio.run(main())
+
