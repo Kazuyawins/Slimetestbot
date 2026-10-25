@@ -20,7 +20,7 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 設定の永続化ファイル管理 ---
+# --- 設定の永続化ファイル管理（再起動後もチャンネルIDを保持） ---
 CONFIG_FILE = "channel_config.txt"
 
 def load_notification_channel_id():
@@ -765,7 +765,7 @@ async def on_member_join(member: discord.Member):
 
   text = settings.get("text", "")
   formatted_text = text.replace("{guild.name}", member.guild.name).replace("{member.name}", member.name)
-  
+
   if settings.get("mention", True):
     final_message = f"{member.mention} {formatted_text}"
   else:
