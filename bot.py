@@ -507,6 +507,19 @@ async def sendembed(
 
 
 @bot.tree.command(
+    name="sendmessage",
+    description="【管理者用】指定した通常のテキストメッセージをBotに送信させます",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(content="送信したいメッセージの内容")
+async def sendmessage(interaction: discord.Interaction, content: str):
+  await interaction.channel.send(content)
+  await interaction.response.send_message(
+      "✅ メッセージを送信しました！", ephemeral=True
+  )
+
+
+@bot.tree.command(
     name="captcha_setup", description="認証パネル（ボタン）を設置します"
 )
 @app_commands.default_permissions(administrator=True)
